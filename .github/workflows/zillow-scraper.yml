@@ -206,8 +206,6 @@ jobs:
         set -o pipefail
         docker run --rm \
           --name zillow-scraper-${{ github.run_number }} \
-          --security-opt seccomp=unconfined \
-          --shm-size=2g \
           -e PARENT_URL="${PARENT_URL}" \
           -e BATCH_NUMBER="${BATCH_NUMBER}" \
           -e BATCH_LINKS="${BATCH_LINKS}" \
@@ -218,10 +216,10 @@ jobs:
           -e PYTHONUNBUFFERED=1 \
           -v "$(pwd):/workspace" \
           -w /workspace \
-          --memory="5g" \
+          --memory="2g" \
           --cpus="1.5" \
           "$IMAGE_TAG" \
-          python extract_profiles.py \
+          timeout 300s python extract_profiles.py \
             --parent_url "$PARENT_URL" \
             --batch_number "$BATCH_NUMBER" \
             --batch_links "$BATCH_LINKS" \
