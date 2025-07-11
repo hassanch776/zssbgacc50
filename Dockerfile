@@ -54,7 +54,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r /tmp/requirements.txt && \
     # Verify installation
-    python -c "import seleniumbase, requests, bs4, lxml; print('All packages working')"
+    python -c "import seleniumbase, requests, selenium, bs4, lxml; print('All packages working')"
 
 # Set environment variables
 ENV CHROME_BIN=/usr/bin/google-chrome \
