@@ -9,7 +9,7 @@ import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def extract_profile_info(sb, url):
+def extract_profile_info(sb, url, batch_number, link_index):
     logging.info(f"Extracting profile info from URL: {url}")
     sb.cdp.open(url)
     time.sleep(7)
@@ -24,9 +24,31 @@ def extract_profile_info(sb, url):
             logging.info(f"Extracted profile info: {profile_info}")
         else:
             logging.error("Script tag with id '__NEXT_DATA__' not found.")
+            # Take screenshot for debugging
+            screenshot_name = f"debug_screenshot_batch_{batch_number}_link_{link_index}_{int(time.time())}.png"
+            try:
+                sb.save_screenshot(screenshot_name)
+                logging.info(f"Screenshot saved: {screenshot_name}")
+                
+                # Also save page source for debugging
+                html_name = f"debug_page_source_batch_{batch_number}_link_{link_index}_{int(time.time())}.html"
+                with open(html_name, 'w', encoding='utf-8') as f:
+                    f.write(html)
+                logging.info(f"Page source saved: {html_name}")
+                
+            except Exception as screenshot_error:
+                logging.error(f"Failed to save screenshot: {screenshot_error}")
+            
             return {}
     except Exception as e:
         logging.error(f"Failed to extract profile info: {e}")
+        # Take screenshot for debugging exceptions too
+        screenshot_name = f"error_screenshot_batch_{batch_number}_link_{link_index}_{int(time.time())}.png"
+        try:
+            sb.save_screenshot(screenshot_name)
+            logging.info(f"Error screenshot saved: {screenshot_name}")
+        except Exception as screenshot_error:
+            logging.error(f"Failed to save error screenshot: {screenshot_error}")
         return {}
     return profile_info
 
@@ -110,7 +132,7 @@ def main():
             try:
                 with create_sb_context() as sb:
                     sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-                    profile_info = extract_profile_info(sb, link)
+                    profile_info = extract_profile_info(sb, link, batch_number, i)
                     
                 if profile_info:
                     logging.info(f"Successfully extracted profile info on attempt {retry_count + 1}")
