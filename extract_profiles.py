@@ -88,7 +88,7 @@ def main():
     proxy_selenium = f"{proxy_username}:{proxy_password}@{proxy_dns}"
 
     batch_results = []
-    with SB(uc=True, proxy=proxy_selenium) as sb:
+    with SB(uc=True, proxy=proxy_selenium, xvfb=True) as sb:
         sb.activate_cdp_mode("about:blank", tzone="America/Panama")
         for i, link in enumerate(batch_links, 1):
             logging.info(f"Processing profile {i}/{len(batch_links)}: {link}")
