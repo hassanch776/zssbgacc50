@@ -1,4 +1,5 @@
 seleniumbase
 requests
 beautifulsoup4
-lxml 
+lxml
+selenium 
