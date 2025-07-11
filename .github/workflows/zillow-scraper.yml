@@ -24,44 +24,273 @@ on:
       proxy_dns:
         description: 'Proxy DNS (host:port)'
         required: true
+      force_rebuild:
+        description: 'Force rebuild Docker image'
+        required: false
+        default: 'false'
+        type: boolean
+  push:
+    paths:
+      - 'Dockerfile'  # Rebuild image when Dockerfile changes
+      - 'requirements.txt'  # Rebuild when dependencies change
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: hassanch776/zssbgacc50/zillow-scraper
 
 jobs:
-  extract-profiles-batch:
-    name: Extract Profiles Batch
-    runs-on: ubuntu-latest
+  # Build and push Docker image (only when needed)
+  build-image:
+    runs-on: ubuntu-latest-4-cores
+    if: github.event_name == 'push' || github.event.inputs.force_rebuild == 'true'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx with aggressive caching
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: |
+          image=moby/buildkit:buildx-stable-1
+          network=host
+        
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Build and push with maximum caching
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        cache-from: |
+          type=gha
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
+        cache-to: |
+          type=gha,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache,mode=max
+        platforms: linux/amd64
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+  # Run the Zillow profile extraction batch
+  extract-profiles-batch:
+    runs-on: ubuntu-latest-4-cores
+    needs: [build-image]
+    if: always() && (needs.build-image.result == 'success' || needs.build-image.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read
+      actions: write  # Required to trigger new workflows
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Build Docker image (if not already built)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: zillow-scraper:latest
-
-      - name: Run extract_profiles.py for this batch in Docker
-        run: |
-          docker run --rm \
-            -v "$(pwd):/workspace" \
-            -w /workspace \
-            zillow-scraper:latest \
-            python extract_profiles.py \
-              --parent_url "${{ github.event.inputs.parent_url }}" \
-              --batch_number "${{ github.event.inputs.batch_number }}" \
-              --batch_links '${{ github.event.inputs.batch_links }}' \
-              --csv_filename "${{ github.event.inputs.csv_filename }}" \
-              --proxy_username "${{ github.event.inputs.proxy_username }}" \
-              --proxy_password "${{ github.event.inputs.proxy_password }}" \
-              --proxy_dns "${{ github.event.inputs.proxy_dns }}"
-
-      - name: Upload batch JSON as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
-          path: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Determine Docker image to use
+      id: image
+      run: |
+        # Always use the latest tag for simplicity
+        IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "Using Docker image: $IMAGE_TAG"
+        
+    - name: Optimized Docker setup (targeting 10-15 seconds)
+      run: |
+        IMAGE_TAG="${{ steps.image.outputs.image_tag }}"
+        echo "🚀 Optimized Docker setup: $IMAGE_TAG"
+        
+        # Enable Docker BuildKit for faster operations
+        export DOCKER_BUILDKIT=1
+        
+        # Try multiple strategies for fastest pull
+        echo "📦 Attempting pull strategies..."
+        
+        # Strategy 1: Direct pull (usually fastest if image exists)
+        if timeout 45s docker pull "$IMAGE_TAG" 2>/dev/null; then
+          echo "✅ Pre-built image pulled successfully"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          
+        # Strategy 2: Check if we can build with cache faster than pull
+        elif [ -f "Dockerfile" ]; then
+          echo "🔨 Building with cache (may be faster than remote pull)..."
+          docker build \
+            --cache-from "$IMAGE_TAG" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t zillow-scraper:local \
+            . || docker build -t zillow-scraper:local .
+          echo "IMAGE_TAG=zillow-scraper:local" >> $GITHUB_ENV
+          
+        else
+          echo "❌ No Dockerfile found and pull failed"
+          exit 1
+        fi
+        
+        echo "✅ Docker setup complete!"
+        
+    - name: Parse batch parameters (fast)
+      id: parse-batch
+      run: |
+        PARENT_URL="${{ github.event.inputs.parent_url }}"
+        BATCH_NUMBER="${{ github.event.inputs.batch_number }}"
+        BATCH_LINKS="${{ github.event.inputs.batch_links }}"
+        CSV_FILENAME="${{ github.event.inputs.csv_filename }}"
+        
+        # Validate required inputs
+        if [ -z "$PARENT_URL" ]; then
+          echo "Error: parent_url is required"
+          echo '{"error": "parent_url is required", "status": "failed"}' > error_response.json
+          exit 1
+        fi
+        
+        if [ -z "$BATCH_NUMBER" ]; then
+          echo "Error: batch_number is required"
+          echo '{"error": "batch_number is required", "status": "failed"}' > error_response.json
+          exit 1
+        fi
+        
+        if [ -z "$BATCH_LINKS" ]; then
+          echo "Error: batch_links is required"
+          echo '{"error": "batch_links is required", "status": "failed"}' > error_response.json
+          exit 1
+        fi
+        
+        if [ -z "$CSV_FILENAME" ]; then
+          echo "Error: csv_filename is required"
+          echo '{"error": "csv_filename is required", "status": "failed"}' > error_response.json
+          exit 1
+        fi
+        
+        # Quick count of links
+        if command -v jq >/dev/null 2>&1; then
+          LINK_COUNT=$(echo "$BATCH_LINKS" | jq '. | length' 2>/dev/null || echo "1")
+        else
+          LINK_COUNT="unknown"
+        fi
+        
+        echo "link_count=$LINK_COUNT" >> $GITHUB_OUTPUT
+        echo "batch_number=$BATCH_NUMBER" >> $GITHUB_OUTPUT
+        echo "csv_filename=$CSV_FILENAME" >> $GITHUB_OUTPUT
+        echo "Processing batch $BATCH_NUMBER with $LINK_COUNT links"
+        
+    - name: Run Zillow profile extractor (instant start)
+      id: extractor
+      env:
+        PARENT_URL: ${{ github.event.inputs.parent_url }}
+        BATCH_NUMBER: ${{ github.event.inputs.batch_number }}
+        BATCH_LINKS: ${{ github.event.inputs.batch_links }}
+        CSV_FILENAME: ${{ github.event.inputs.csv_filename }}
+        PROXY_USERNAME: ${{ github.event.inputs.proxy_username }}
+        PROXY_PASSWORD: ${{ github.event.inputs.proxy_password }}
+        PROXY_DNS: ${{ github.event.inputs.proxy_dns }}
+      run: |
+        echo "🚀 Starting Zillow profile extractor for batch ${{ github.event.inputs.batch_number }}..."
+        # Run with minimal overhead
+        set -o pipefail
+        docker run --rm \
+          --name zillow-scraper-${{ github.run_number }} \
+          -e PARENT_URL="${PARENT_URL}" \
+          -e BATCH_NUMBER="${BATCH_NUMBER}" \
+          -e BATCH_LINKS="${BATCH_LINKS}" \
+          -e CSV_FILENAME="${CSV_FILENAME}" \
+          -e PROXY_USERNAME="${PROXY_USERNAME}" \
+          -e PROXY_PASSWORD="${PROXY_PASSWORD}" \
+          -e PROXY_DNS="${PROXY_DNS}" \
+          -e PYTHONUNBUFFERED=1 \
+          -v "$(pwd):/workspace" \
+          -w /workspace \
+          --memory="12g" \
+          --cpus="3.5" \
+          "$IMAGE_TAG" \
+          python extract_profiles.py \
+            --parent_url "$PARENT_URL" \
+            --batch_number "$BATCH_NUMBER" \
+            --batch_links "$BATCH_LINKS" \
+            --csv_filename "$CSV_FILENAME" \
+            --proxy_username "$PROXY_USERNAME" \
+            --proxy_password "$PROXY_PASSWORD" \
+            --proxy_dns "$PROXY_DNS" 2>&1 | tee workflow.log
+        
+    - name: List generated files
+      run: |
+        echo "Files in workspace:"
+        ls -la
+        echo "Looking for JSON files:"
+        find . -name "*.json" -type f
+        
+    - name: Upload batch JSON as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
+        path: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
+        retention-days: 30
+        if-no-files-found: warn
+        
+    - name: Show batch processing summary
+      run: |
+        echo "=== BATCH ${{ steps.parse-batch.outputs.batch_number }} PROCESSING SUMMARY ==="
+        ARTIFACT_FILE="${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json"
+        
+        if [ -f "$ARTIFACT_FILE" ]; then
+          echo "Batch data file: $ARTIFACT_FILE"
+          echo "File size: $(wc -c < "$ARTIFACT_FILE") bytes"
+          
+          # Try to extract summary from the JSON structure
+          if command -v jq >/dev/null 2>&1; then
+            echo "Batch summary:"
+            PROFILE_COUNT=$(jq '. | length // 0' "$ARTIFACT_FILE" 2>/dev/null || echo "0")
+            echo "📊 Profiles processed: $PROFILE_COUNT"
+            echo "📦 Batch number: ${{ steps.parse-batch.outputs.batch_number }}"
+            echo "📄 CSV filename: ${{ steps.parse-batch.outputs.csv_filename }}"
+            echo "🔗 Links processed: ${{ steps.parse-batch.outputs.link_count }}"
+          else
+            echo "jq not available, showing file size only"
+          fi
+          echo "📄 Output format: JSON"
+          echo "---"
+        else
+          echo "No batch data file found: $ARTIFACT_FILE"
+        fi
+        echo "=========================="
+        
+    - name: Upload error log if failed
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: error-log-batch-${{ github.event.inputs.batch_number }}
+        path: workflow.log
+        retention-days: 30
+        if-no-files-found: warn
+    
+    - name: Create error JSON if failed
+      if: failure()
+      run: |
+        jq -n --arg msg "Batch ${{ github.event.inputs.batch_number }} failed. See error log for details." '{"error":$msg,"status":"failed","batch_number":"${{ github.event.inputs.batch_number }}"}' > error_response.json
+    
+    - name: Upload error JSON if failed
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: error-response-batch-${{ github.event.inputs.batch_number }}
+        path: error_response.json
+        retention-days: 30
+        if-no-files-found: warn
 
 # Note: Each run processes one batch of profile links and uploads a single JSON artifact. 
