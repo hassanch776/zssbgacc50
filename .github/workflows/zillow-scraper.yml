@@ -1,0 +1,67 @@
+name: Zillow Scraper Batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      parent_url:
+        description: 'Parent Zillow URL from urls.txt'
+        required: true
+      batch_number:
+        description: 'Batch number (1-20)'
+        required: true
+      batch_links:
+        description: 'JSON array of profile links for this batch'
+        required: true
+      csv_filename:
+        description: 'CSV file name for this parent URL'
+        required: true
+      proxy_username:
+        description: 'Proxy username'
+        required: true
+      proxy_password:
+        description: 'Proxy password'
+        required: true
+      proxy_dns:
+        description: 'Proxy DNS (host:port)'
+        required: true
+
+jobs:
+  extract-profiles-batch:
+    name: Extract Profiles Batch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (if not already built)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: zillow-scraper:latest
+
+      - name: Run extract_profiles.py for this batch in Docker
+        run: |
+          docker run --rm \
+            -v "$(pwd):/workspace" \
+            -w /workspace \
+            zillow-scraper:latest \
+            python extract_profiles.py \
+              --parent_url "${{ github.event.inputs.parent_url }}" \
+              --batch_number "${{ github.event.inputs.batch_number }}" \
+              --batch_links '${{ github.event.inputs.batch_links }}' \
+              --csv_filename "${{ github.event.inputs.csv_filename }}" \
+              --proxy_username "${{ github.event.inputs.proxy_username }}" \
+              --proxy_password "${{ github.event.inputs.proxy_password }}" \
+              --proxy_dns "${{ github.event.inputs.proxy_dns }}"
+
+      - name: Upload batch JSON as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
+          path: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
+
+# Note: Each run processes one batch of profile links and uploads a single JSON artifact. 
