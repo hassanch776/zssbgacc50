@@ -206,6 +206,8 @@ jobs:
         set -o pipefail
         docker run --rm \
           --name zillow-scraper-${{ github.run_number }} \
+          --security-opt seccomp=unconfined \
+          --shm-size=2g \
           -e PARENT_URL="${PARENT_URL}" \
           -e BATCH_NUMBER="${BATCH_NUMBER}" \
           -e BATCH_LINKS="${BATCH_LINKS}" \
