@@ -190,6 +190,12 @@ jobs:
         echo "csv_filename=$CSV_FILENAME" >> $GITHUB_OUTPUT
         echo "Processing batch $BATCH_NUMBER with $LINK_COUNT links"
         
+    - name: Setup Chrome dependencies for Docker
+      run: |
+        echo "Setting up Chrome environment variables for Docker..."
+        echo "GOOGLE_CHROME_SHIM=/usr/bin/google-chrome" >> $GITHUB_ENV
+        echo "DISPLAY=:99" >> $GITHUB_ENV
+        
     - name: Run Zillow profile extractor (instant start)
       id: extractor
       env:
@@ -200,6 +206,8 @@ jobs:
         PROXY_USERNAME: ${{ github.event.inputs.proxy_username }}
         PROXY_PASSWORD: ${{ github.event.inputs.proxy_password }}
         PROXY_DNS: ${{ github.event.inputs.proxy_dns }}
+        GOOGLE_CHROME_SHIM: /usr/bin/google-chrome
+        DISPLAY: ":99"
       run: |
         echo "🚀 Starting Zillow profile extractor for batch ${{ github.event.inputs.batch_number }}..."
         # Run with minimal overhead
@@ -214,10 +222,13 @@ jobs:
           -e PROXY_PASSWORD="${PROXY_PASSWORD}" \
           -e PROXY_DNS="${PROXY_DNS}" \
           -e PYTHONUNBUFFERED=1 \
+          -e GOOGLE_CHROME_SHIM=/usr/bin/google-chrome \
+          -e DISPLAY=:99 \
           -v "$(pwd):/workspace" \
           -w /workspace \
           --memory="2g" \
           --cpus="1.5" \
+          --shm-size=1g \
           "$IMAGE_TAG" \
           timeout 300s python extract_profiles.py \
             --parent_url "$PARENT_URL" \
