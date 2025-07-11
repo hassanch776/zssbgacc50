@@ -1,4 +1,4 @@
-# Optimized but FUNCTIONAL build for Zillow Scrap
+# Optimized but FUNCTIONAL build for Zillow Scraper
 FROM ubuntu:22.04 AS base
 
 # Prevent interactive prompts
