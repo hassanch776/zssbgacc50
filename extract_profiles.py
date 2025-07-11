@@ -88,40 +88,56 @@ def main():
     proxy_selenium = f"{proxy_username}:{proxy_password}@{proxy_dns}"
 
     batch_results = []
-    with SB(
-        uc=True, 
-        proxy=proxy_selenium, 
-        headless=True, 
-        xvfb=True,
-        incognito=True,
-        user_data_dir=None,
-        chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--disable-dev-tools,--headless=new,--remote-debugging-port=9222"
-    ) as sb:
-        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-        for i, link in enumerate(batch_links, 1):
-            logging.info(f"Processing profile {i}/{len(batch_links)}: {link}")
-            while True:
-                profile_info = extract_profile_info(sb, link)
-                if not profile_info:
-                    sb.driver.quit()
-                    sb.get_new_driver(
-                        undetectable=True, 
-                        proxy=proxy_selenium, 
-                        headless=True, 
-                        xvfb=True,
-                        incognito=True,
-                        user_data_dir=None,
-                        chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--disable-dev-tools,--headless=new,--remote-debugging-port=9222"
-                    )
+    
+    def create_sb_context():
+        return SB(
+            uc=True, 
+            proxy=proxy_selenium, 
+            headless=True, 
+            xvfb=True,
+            incognito=True,
+            chromium_arg="--no-sandbox,--disable-dev-tools,--headless=new,--remote-debugging-port=9222"
+        )
+    
+    # Process each link with retry logic
+    for i, link in enumerate(batch_links, 1):
+        logging.info(f"Processing profile {i}/{len(batch_links)}: {link}")
+        profile_info = None
+        max_retries = 3
+        retry_count = 0
+        
+        while not profile_info and retry_count < max_retries:
+            try:
+                with create_sb_context() as sb:
                     sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-                    continue
+                    profile_info = extract_profile_info(sb, link)
+                    
+                if profile_info:
+                    logging.info(f"Successfully extracted profile info on attempt {retry_count + 1}")
                 else:
-                    break
-            batch_results.append({
-                "profile_link": link,
-                "profile_data": profile_info
-            })
-            time.sleep(random.uniform(1, 2))
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logging.warning(f"Failed to extract profile info, retrying... (attempt {retry_count + 1}/{max_retries})")
+                        time.sleep(random.uniform(2, 4))  # Wait before retry
+                    else:
+                        logging.error(f"Failed to extract profile info after {max_retries} attempts, skipping...")
+                        profile_info = {}  # Empty profile to continue processing
+                        
+            except Exception as e:
+                retry_count += 1
+                logging.error(f"Error with Chrome instance on attempt {retry_count}: {e}")
+                if retry_count < max_retries:
+                    logging.warning(f"Retrying with new Chrome instance... (attempt {retry_count + 1}/{max_retries})")
+                    time.sleep(random.uniform(2, 4))  # Wait before retry
+                else:
+                    logging.error(f"Failed after {max_retries} attempts, skipping this profile...")
+                    profile_info = {}  # Empty profile to continue processing
+        
+        batch_results.append({
+            "profile_link": link,
+            "profile_data": profile_info
+        })
+        time.sleep(random.uniform(1, 2))
 
     # Save batch results as JSON artifact
     json_name = f"{csv_filename.replace('.csv','')}-{batch_number}.json"
