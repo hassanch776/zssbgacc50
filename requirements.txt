@@ -1,0 +1,4 @@
+seleniumbase
+requests
+beautifulsoup4
+lxml 
