@@ -94,7 +94,6 @@ def main():
         headless=True, 
         xvfb=True,
         incognito=True,
-        disable_gpu=True,
         user_data_dir=None,
         chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--disable-dev-tools,--headless=new,--remote-debugging-port=9222"
     ) as sb:
@@ -111,7 +110,6 @@ def main():
                         headless=True, 
                         xvfb=True,
                         incognito=True,
-                        disable_gpu=True,
                         user_data_dir=None,
                         chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--disable-dev-tools,--headless=new,--remote-debugging-port=9222"
                     )
