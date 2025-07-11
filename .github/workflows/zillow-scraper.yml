@@ -245,6 +245,8 @@ jobs:
         ls -la
         echo "Looking for JSON files:"
         find . -name "*.json" -type f
+        echo "Looking for debug files:"
+        find . -name "debug_*.png" -o -name "debug_*.html" -o -name "error_*.png" -type f
         
     - name: Upload batch JSON as artifact
       uses: actions/upload-artifact@v4
@@ -253,6 +255,18 @@ jobs:
         path: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
         retention-days: 30
         if-no-files-found: warn
+        
+    - name: Upload debug screenshots and HTML files
+      uses: actions/upload-artifact@v4
+      if: always()  # Upload debug files even if the job fails
+      with:
+        name: debug-files-batch-${{ github.event.inputs.batch_number }}
+        path: |
+          debug_*.png
+          debug_*.html
+          error_*.png
+        retention-days: 7
+        if-no-files-found: ignore
         
     - name: Show batch processing summary
       run: |
