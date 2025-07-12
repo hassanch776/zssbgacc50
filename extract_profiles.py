@@ -152,58 +152,43 @@ def main():
     logging.info(f"  - CSV filename: {csv_filename}")
     logging.info(f"  - Proxy: {proxy_dns}")
     
-    def create_sb_context():
-        # Enhanced Chrome configuration for Windows GitHub Actions
+    # Process all links with single Chrome session (reuse until blocked)
+    with SB(uc=True, proxy=proxy_selenium, headless=True) as sb:
+        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
         
-        logging.info(f"Creating SB context with proxy: {proxy_selenium}")
-        
-        
-        return SB(
-            uc=True, 
-            proxy=proxy_selenium, 
-            headless=False, 
-            incognito=True,
-        )
-    
-    # Process each link with retry logic
-    for i, link in enumerate(batch_links, 1):
-        logging.info(f"Processing profile {i}/{len(batch_links)}: {link}")
-        profile_info = None
-        max_retries = 3
-        retry_count = 0
-        
-        while not profile_info and retry_count < max_retries:
-            try:
-                with create_sb_context() as sb:
-                    sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+        for i, link in enumerate(batch_links, 1):
+            logging.info(f"Processing profile {i}/{len(batch_links)}: {link}")
+            
+            while True:
+                try:
                     profile_info = extract_profile_info(sb, link, batch_number, i)
-                    
-                if profile_info:
-                    logging.info(f"Successfully extracted profile info on attempt {retry_count + 1}")
-                else:
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        logging.warning(f"Failed to extract profile info, retrying... (attempt {retry_count + 1}/{max_retries})")
-                        time.sleep(random.uniform(2, 4))  # Wait before retry
+                    if not profile_info:
+                        # Session might be blocked, get new driver
+                        logging.warning(f"Profile extraction failed for {link}, refreshing driver...")
+                        sb.driver.quit()
+                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
+                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+                        continue
                     else:
-                        logging.error(f"Failed to extract profile info after {max_retries} attempts, skipping...")
-                        profile_info = {}  # Empty profile to continue processing
-                        
-            except Exception as e:
-                retry_count += 1
-                logging.error(f"Error with Chrome instance on attempt {retry_count}: {e}")
-                if retry_count < max_retries:
-                    logging.warning(f"Retrying with new Chrome instance... (attempt {retry_count + 1}/{max_retries})")
-                    time.sleep(random.uniform(2, 4))  # Wait before retry
-                else:
-                    logging.error(f"Failed after {max_retries} attempts, skipping this profile...")
-                    profile_info = {}  # Empty profile to continue processing
-        
-        batch_results.append({
-            "profile_link": link,
-            "profile_data": profile_info
-        })
-        time.sleep(random.uniform(1, 2))
+                        logging.info(f"Successfully extracted profile info for {link}")
+                        break
+                except Exception as e:
+                    logging.error(f"Error processing {link}: {e}")
+                    # Try refreshing the driver
+                    try:
+                        sb.driver.quit()
+                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
+                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+                    except Exception as refresh_error:
+                        logging.error(f"Failed to refresh driver: {refresh_error}")
+                        profile_info = {}
+                        break
+            
+            batch_results.append({
+                "profile_link": link,
+                "profile_data": profile_info
+            })
+            time.sleep(random.uniform(1, 2))
 
     # Save batch results as JSON artifact
     json_name = f"{csv_filename.replace('.csv','')}-{batch_number}.json"
