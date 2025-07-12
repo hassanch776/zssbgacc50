@@ -8,71 +8,103 @@ from bs4 import BeautifulSoup
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+import queue
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Configuration: Number of Chrome instances to run in parallel
-NUM_CHROME_INSTANCES = 2  # Safe for Windows runner (2-4 cores)
+NUM_CHROME_INSTANCES = 2  # Reduced to 2 for better stability
 MAX_RETRIES_PER_LINK = 3  # Maximum retries per link
 THREAD_TIMEOUT_SECONDS = 600  # 10 minutes timeout per thread
+OPERATION_TIMEOUT_SECONDS = 60  # 1 minute timeout per operation
 
-def extract_profile_info(sb, url, batch_number, link_index):
+class TimeoutException(Exception):
+    pass
+
+def extract_profile_info_with_timeout(sb, url, batch_number, link_index, timeout_seconds=OPERATION_TIMEOUT_SECONDS):
+    """Extract profile info with operation-level timeout using threading"""
     logging.info(f"Extracting profile info from URL: {url}")
     
+    result_queue = queue.Queue()
+    exception_queue = queue.Queue()
+    
+    def extraction_worker():
+        try:
+            # This is the operation that often hangs
+            logging.info(f"Opening page: {url}")
+            sb.cdp.open(url)
+            logging.info(f"Page opened successfully: {url}")
+            
+            time.sleep(7)
+            
+            # Check if page loaded
+            current_url = sb.cdp.get_current_url()
+            logging.info(f"Current URL after load: {current_url}")
+            
+            html = sb.cdp.get_page_source()
+            logging.info(f"Page source length: {len(html)} characters")
+            
+            # Check for common indicators that page loaded
+            if "zillow" in html.lower():
+                logging.info("Zillow content detected in page")
+            else:
+                logging.warning("No Zillow content detected in page")
+                
+            soup = BeautifulSoup(html, 'html.parser')
+            script_tag = soup.find('script', id='__NEXT_DATA__')
+            
+            if script_tag:
+                json_data = json.loads(script_tag.string)
+                profile_info = extract_profile_info_from_json(json_data)
+                logging.info(f"Extracted profile info: {profile_info}")
+                result_queue.put(profile_info)
+            else:
+                logging.error("Script tag with id '__NEXT_DATA__' not found.")
+                # Take screenshot for debugging
+                screenshot_name = f"debug_screenshot_batch_{batch_number}_link_{link_index}_{int(time.time())}.png"
+                try:
+                    sb.save_screenshot(screenshot_name)
+                    logging.info(f"Screenshot saved: {screenshot_name}")
+                    
+                    # Also save page source for debugging
+                    html_name = f"debug_page_source_batch_{batch_number}_link_{link_index}_{int(time.time())}.html"
+                    with open(html_name, 'w', encoding='utf-8') as f:
+                        f.write(html)
+                    logging.info(f"Page source saved: {html_name}")
+                    
+                except Exception as screenshot_error:
+                    logging.error(f"Failed to save screenshot: {screenshot_error}")
+                
+                result_queue.put({})
+                
+        except Exception as e:
+            logging.error(f"Failed to extract profile info: {e}")
+            exception_queue.put(e)
+            result_queue.put({})
+    
+    # Start the extraction in a separate thread
+    worker_thread = threading.Thread(target=extraction_worker)
+    worker_thread.daemon = True
+    worker_thread.start()
+    
+    # Wait for result with timeout
     try:
-        sb.cdp.open(url)
-        logging.info(f"Page opened successfully: {url}")
-        time.sleep(7)
-        
-        # Check if page loaded
-        current_url = sb.cdp.get_current_url()
-        logging.info(f"Current URL after load: {current_url}")
-        
-        html = sb.cdp.get_page_source()
-        logging.info(f"Page source length: {len(html)} characters")
-        
-        # Check for common indicators that page loaded
-        if "zillow" in html.lower():
-            logging.info("Zillow content detected in page")
-        else:
-            logging.warning("No Zillow content detected in page")
-            
-        soup = BeautifulSoup(html, 'html.parser')
-        script_tag = soup.find('script', id='__NEXT_DATA__')
-        
-        if script_tag:
-            json_data = json.loads(script_tag.string)
-            profile_info = extract_profile_info_from_json(json_data)
-            logging.info(f"Extracted profile info: {profile_info}")
-        else:
-            logging.error("Script tag with id '__NEXT_DATA__' not found.")
-            # Take screenshot for debugging
-            screenshot_name = f"debug_screenshot_batch_{batch_number}_link_{link_index}_{int(time.time())}.png"
-            try:
-                sb.save_screenshot(screenshot_name)
-                logging.info(f"Screenshot saved: {screenshot_name}")
-                
-                # Also save page source for debugging
-                html_name = f"debug_page_source_batch_{batch_number}_link_{link_index}_{int(time.time())}.html"
-                with open(html_name, 'w', encoding='utf-8') as f:
-                    f.write(html)
-                logging.info(f"Page source saved: {html_name}")
-                
-            except Exception as screenshot_error:
-                logging.error(f"Failed to save screenshot: {screenshot_error}")
-            
-            return {}
-    except Exception as e:
-        logging.error(f"Failed to extract profile info: {e}")
-        # Take screenshot for debugging exceptions too
-        screenshot_name = f"error_screenshot_batch_{batch_number}_link_{link_index}_{int(time.time())}.png"
+        result = result_queue.get(timeout=timeout_seconds)
+        return result
+    except queue.Empty:
+        logging.error(f"Operation timed out after {timeout_seconds} seconds for URL: {url}")
+        # Take screenshot for debugging timeout
+        screenshot_name = f"timeout_screenshot_batch_{batch_number}_link_{link_index}_{int(time.time())}.png"
         try:
             sb.save_screenshot(screenshot_name)
-            logging.info(f"Error screenshot saved: {screenshot_name}")
+            logging.info(f"Timeout screenshot saved: {screenshot_name}")
         except Exception as screenshot_error:
-            logging.error(f"Failed to save error screenshot: {screenshot_error}")
+            logging.error(f"Failed to save timeout screenshot: {screenshot_error}")
         return {}
-    return profile_info
+
+def extract_profile_info(sb, url, batch_number, link_index):
+    """Wrapper for backward compatibility"""
+    return extract_profile_info_with_timeout(sb, url, batch_number, link_index)
 
 def extract_profile_info_from_json(json_data):
     profile_info = {}
@@ -131,6 +163,9 @@ def process_batch_chunk(chunk_links, chunk_id, batch_number, run_uuid, proxy_sel
                 
                 while retry_count < MAX_RETRIES_PER_LINK:
                     try:
+                        # Add heartbeat logging
+                        logging.info(f"Instance {chunk_id}: Attempt {retry_count + 1}/{MAX_RETRIES_PER_LINK} for {link}")
+                        
                         profile_info = extract_profile_info(sb, link, batch_number, f"{chunk_id}_{i}")
                         if profile_info:
                             logging.info(f"Instance {chunk_id}: Successfully extracted profile info for {link}")
@@ -141,10 +176,12 @@ def process_batch_chunk(chunk_links, chunk_id, batch_number, run_uuid, proxy_sel
                             retry_count += 1
                             if retry_count < MAX_RETRIES_PER_LINK:
                                 try:
+                                    logging.info(f"Instance {chunk_id}: Refreshing driver...")
                                     sb.driver.quit()
                                     sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
                                     sb.activate_cdp_mode("about:blank", tzone="America/Panama")
                                     time.sleep(2)  # Brief pause before retry
+                                    logging.info(f"Instance {chunk_id}: Driver refreshed successfully")
                                 except Exception as refresh_error:
                                     logging.error(f"Instance {chunk_id}: Failed to refresh driver: {refresh_error}")
                                     break
@@ -154,10 +191,12 @@ def process_batch_chunk(chunk_links, chunk_id, batch_number, run_uuid, proxy_sel
                         if retry_count < MAX_RETRIES_PER_LINK:
                             # Try refreshing the driver
                             try:
+                                logging.info(f"Instance {chunk_id}: Refreshing driver after error...")
                                 sb.driver.quit()
                                 sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
                                 sb.activate_cdp_mode("about:blank", tzone="America/Panama")
                                 time.sleep(2)  # Brief pause before retry
+                                logging.info(f"Instance {chunk_id}: Driver refreshed after error")
                             except Exception as refresh_error:
                                 logging.error(f"Instance {chunk_id}: Failed to refresh driver: {refresh_error}")
                                 break
@@ -170,6 +209,9 @@ def process_batch_chunk(chunk_links, chunk_id, batch_number, run_uuid, proxy_sel
                     "profile_link": link,
                     "profile_data": profile_info
                 })
+                
+                # Add heartbeat after each link
+                logging.info(f"Instance {chunk_id}: Completed link {i}/{len(chunk_links)}, moving to next...")
                 time.sleep(random.uniform(1, 2))
         
         logging.info(f"Chrome instance {chunk_id} completed processing {len(chunk_results)} links")
