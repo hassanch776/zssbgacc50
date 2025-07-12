@@ -57,11 +57,29 @@ jobs:
           --proxy_password "${{ github.event.inputs.proxy_password }}" \
           --proxy_dns "${{ github.event.inputs.proxy_dns }}"
 
+    - name: List generated files
+      run: |
+        echo "Files in workspace:"
+        ls -la
+        echo "Looking for JSON files:"
+        find . -name "*.json" -type f
+        echo "Looking for debug files:"
+        find . -name "debug_*.png" -o -name "debug_*.html" -o -name "error_*.png" -type f
+        
+    - name: Create filename variables
+      id: filenames
+      run: |
+        CSV_FILENAME="${{ github.event.inputs.csv_filename }}"
+        JSON_BASENAME="${CSV_FILENAME%.csv}"
+        JSON_FILENAME="${JSON_BASENAME}-${{ github.event.inputs.batch_number }}.json"
+        echo "json_filename=$JSON_FILENAME" >> $GITHUB_OUTPUT
+        echo "Generated filename: $JSON_FILENAME"
+        
     - name: Upload batch JSON as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
-        path: ${{ github.event.inputs.csv_filename }}-${{ github.event.inputs.batch_number }}.json
+        name: ${{ steps.filenames.outputs.json_filename }}
+        path: ${{ steps.filenames.outputs.json_filename }}
         retention-days: 30
         if-no-files-found: warn
         
