@@ -11,13 +11,28 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def extract_profile_info(sb, url, batch_number, link_index):
     logging.info(f"Extracting profile info from URL: {url}")
-    sb.cdp.open(url)
-    time.sleep(7)
-    profile_info = {}
+    
     try:
+        sb.cdp.open(url)
+        logging.info(f"Page opened successfully: {url}")
+        time.sleep(7)
+        
+        # Check if page loaded
+        current_url = sb.cdp.get_current_url()
+        logging.info(f"Current URL after load: {current_url}")
+        
         html = sb.cdp.get_page_source()
+        logging.info(f"Page source length: {len(html)} characters")
+        
+        # Check for common indicators that page loaded
+        if "zillow" in html.lower():
+            logging.info("Zillow content detected in page")
+        else:
+            logging.warning("No Zillow content detected in page")
+            
         soup = BeautifulSoup(html, 'html.parser')
         script_tag = soup.find('script', id='__NEXT_DATA__')
+        
         if script_tag:
             json_data = json.loads(script_tag.string)
             profile_info = extract_profile_info_from_json(json_data)
@@ -102,7 +117,26 @@ def main():
 
     parent_url = args.parent_url
     batch_number = args.batch_number
-    batch_links = json.loads(args.batch_links)
+    
+    # Try to parse JSON from command line argument, with better error handling
+    try:
+        batch_links = json.loads(args.batch_links)
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse batch_links JSON: {e}")
+        logging.error(f"Received batch_links: {repr(args.batch_links)}")
+        # Try to get from environment variable as fallback
+        batch_links_env = os.environ.get('BATCH_LINKS')
+        if batch_links_env:
+            try:
+                batch_links = json.loads(batch_links_env)
+                logging.info("Successfully parsed batch_links from environment variable")
+            except json.JSONDecodeError as env_e:
+                logging.error(f"Failed to parse batch_links from environment: {env_e}")
+                logging.error(f"Environment batch_links: {repr(batch_links_env)}")
+                raise
+        else:
+            raise
+    
     csv_filename = args.csv_filename
     proxy_username = args.proxy_username
     proxy_password = args.proxy_password
@@ -111,14 +145,24 @@ def main():
 
     batch_results = []
     
+    logging.info(f"Starting batch processing:")
+    logging.info(f"  - Parent URL: {parent_url}")
+    logging.info(f"  - Batch number: {batch_number}")
+    logging.info(f"  - Number of links: {len(batch_links)}")
+    logging.info(f"  - CSV filename: {csv_filename}")
+    logging.info(f"  - Proxy: {proxy_dns}")
+    
     def create_sb_context():
+        # Enhanced Chrome configuration for Windows GitHub Actions
+        
+        logging.info(f"Creating SB context with proxy: {proxy_selenium}")
+        
+        
         return SB(
             uc=True, 
             proxy=proxy_selenium, 
-            headless=True, 
-            xvfb=True,
+            headless=False, 
             incognito=True,
-            chromium_arg="--no-sandbox,--disable-dev-tools,--headless=new,--remote-debugging-port=9222"
         )
     
     # Process each link with retry logic
