@@ -27,7 +27,7 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
     - name: Check out repository
@@ -48,31 +48,24 @@ jobs:
       env:
         BATCH_LINKS: ${{ github.event.inputs.batch_links }}
       run: |
-        python extract_profiles.py \
-          --parent_url "${{ github.event.inputs.parent_url }}" \
-          --batch_number "${{ github.event.inputs.batch_number }}" \
-          --batch_links "[]" \
-          --csv_filename "${{ github.event.inputs.csv_filename }}" \
-          --proxy_username "${{ github.event.inputs.proxy_username }}" \
-          --proxy_password "${{ github.event.inputs.proxy_password }}" \
-          --proxy_dns "${{ github.event.inputs.proxy_dns }}"
+        python extract_profiles.py --parent_url "${{ github.event.inputs.parent_url }}" --batch_number "${{ github.event.inputs.batch_number }}" --batch_links "[]" --csv_filename "${{ github.event.inputs.csv_filename }}" --proxy_username "${{ github.event.inputs.proxy_username }}" --proxy_password "${{ github.event.inputs.proxy_password }}" --proxy_dns "${{ github.event.inputs.proxy_dns }}"
 
     - name: List generated files
       run: |
         echo "Files in workspace:"
-        ls -la
+        dir
         echo "Looking for JSON files:"
-        find . -name "*.json" -type f
+        Get-ChildItem -Name "*.json" -File
         echo "Looking for debug files:"
-        find . -name "debug_*.png" -o -name "debug_*.html" -o -name "error_*.png" -type f
+        Get-ChildItem -Name "debug_*.png", "debug_*.html", "error_*.png" -File
         
     - name: Create filename variables
       id: filenames
       run: |
-        CSV_FILENAME="${{ github.event.inputs.csv_filename }}"
-        JSON_BASENAME="${CSV_FILENAME%.csv}"
-        JSON_FILENAME="${JSON_BASENAME}-${{ github.event.inputs.batch_number }}.json"
-        echo "json_filename=$JSON_FILENAME" >> $GITHUB_OUTPUT
+        $CSV_FILENAME = "${{ github.event.inputs.csv_filename }}"
+        $JSON_BASENAME = $CSV_FILENAME -replace '\.csv$', ''
+        $JSON_FILENAME = "${JSON_BASENAME}-${{ github.event.inputs.batch_number }}.json"
+        echo "json_filename=$JSON_FILENAME" >> $env:GITHUB_OUTPUT
         echo "Generated filename: $JSON_FILENAME"
         
     - name: Upload batch JSON as artifact
