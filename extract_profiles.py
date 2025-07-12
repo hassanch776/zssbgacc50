@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Configuration: Number of Chrome instances to run in parallel
-NUM_CHROME_INSTANCES = 3  # Safe for Windows runner (2-4 cores)
+NUM_CHROME_INSTANCES = 2  # Safe for Windows runner (2-4 cores)
 MAX_RETRIES_PER_LINK = 3  # Maximum retries per link
 THREAD_TIMEOUT_SECONDS = 600  # 10 minutes timeout per thread
 
