@@ -6,8 +6,13 @@ import argparse
 from seleniumbase import SB
 from bs4 import BeautifulSoup
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Configuration: Number of Chrome instances to run in parallel
+NUM_CHROME_INSTANCES = 3  # Safe for Windows runner (2-4 cores)
 
 def extract_profile_info(sb, url, batch_number, link_index):
     logging.info(f"Extracting profile info from URL: {url}")
@@ -104,6 +109,69 @@ def extract_profile_info_from_json(json_data):
         profile_info["Ratings Average"] = None
     return profile_info
 
+def process_batch_chunk(chunk_links, chunk_id, batch_number, run_uuid, proxy_selenium):
+    """Process a chunk of links with a dedicated Chrome instance"""
+    chunk_results = []
+    
+    logging.info(f"Chrome instance {chunk_id} starting with {len(chunk_links)} links")
+    
+    # Each instance gets its own SB context - no conflicts
+    with SB(uc=True, proxy=proxy_selenium, headless=True) as sb:
+        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+        
+        for i, link in enumerate(chunk_links, 1):
+            logging.info(f"Instance {chunk_id} processing link {i}/{len(chunk_links)}: {link}")
+            
+            while True:
+                try:
+                    profile_info = extract_profile_info(sb, link, batch_number, f"{chunk_id}_{i}")
+                    if not profile_info:
+                        # Session might be blocked, get new driver
+                        logging.warning(f"Instance {chunk_id}: Profile extraction failed for {link}, refreshing driver...")
+                        sb.driver.quit()
+                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
+                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+                        continue
+                    else:
+                        logging.info(f"Instance {chunk_id}: Successfully extracted profile info for {link}")
+                        break
+                except Exception as e:
+                    logging.error(f"Instance {chunk_id}: Error processing {link}: {e}")
+                    # Try refreshing the driver
+                    try:
+                        sb.driver.quit()
+                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
+                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+                    except Exception as refresh_error:
+                        logging.error(f"Instance {chunk_id}: Failed to refresh driver: {refresh_error}")
+                        profile_info = {}
+                        break
+            
+            chunk_results.append({
+                "profile_link": link,
+                "profile_data": profile_info
+            })
+            time.sleep(random.uniform(1, 2))
+    
+    logging.info(f"Chrome instance {chunk_id} completed processing {len(chunk_results)} links")
+    return chunk_results
+
+def split_links_into_chunks(batch_links, num_chunks):
+    """Split batch_links into roughly equal chunks"""
+    chunk_size = len(batch_links) // num_chunks
+    chunks = []
+    
+    for i in range(num_chunks):
+        start = i * chunk_size
+        if i == num_chunks - 1:  # Last chunk gets any remaining links
+            end = len(batch_links)
+        else:
+            end = (i + 1) * chunk_size
+        
+        chunks.append(batch_links[start:end])
+    
+    return chunks
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--parent_url', required=True)
@@ -145,8 +213,6 @@ def main():
     proxy_dns = args.proxy_dns
     proxy_selenium = f"{proxy_username}:{proxy_password}@{proxy_dns}"
 
-    batch_results = []
-    
     logging.info(f"Starting batch processing:")
     logging.info(f"  - Parent URL: {parent_url}")
     logging.info(f"  - Batch number: {batch_number}")
@@ -154,50 +220,43 @@ def main():
     logging.info(f"  - Number of links: {len(batch_links)}")
     logging.info(f"  - CSV filename: {csv_filename}")
     logging.info(f"  - Proxy: {proxy_dns}")
+    logging.info(f"  - Chrome instances: {NUM_CHROME_INSTANCES}")
     
-    # Process all links with single Chrome session (reuse until blocked)
-    with SB(uc=True, proxy=proxy_selenium, headless=True) as sb:
-        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+    # Split batch_links into chunks for parallel processing
+    link_chunks = split_links_into_chunks(batch_links, NUM_CHROME_INSTANCES)
+    
+    logging.info(f"Split {len(batch_links)} links into {len(link_chunks)} chunks:")
+    for i, chunk in enumerate(link_chunks):
+        logging.info(f"  - Chunk {i+1}: {len(chunk)} links")
+    
+    # Process chunks in parallel using ThreadPoolExecutor
+    all_results = []
+    
+    with ThreadPoolExecutor(max_workers=NUM_CHROME_INSTANCES) as executor:
+        # Submit all chunks to the thread pool
+        future_to_chunk = {
+            executor.submit(process_batch_chunk, chunk, i+1, batch_number, run_uuid, proxy_selenium): i+1
+            for i, chunk in enumerate(link_chunks)
+        }
         
-        for i, link in enumerate(batch_links, 1):
-            logging.info(f"Processing profile {i}/{len(batch_links)}: {link}")
-            
-            while True:
-                try:
-                    profile_info = extract_profile_info(sb, link, batch_number, i)
-                    if not profile_info:
-                        # Session might be blocked, get new driver
-                        logging.warning(f"Profile extraction failed for {link}, refreshing driver...")
-                        sb.driver.quit()
-                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
-                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-                        continue
-                    else:
-                        logging.info(f"Successfully extracted profile info for {link}")
-                        break
-                except Exception as e:
-                    logging.error(f"Error processing {link}: {e}")
-                    # Try refreshing the driver
-                    try:
-                        sb.driver.quit()
-                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
-                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-                    except Exception as refresh_error:
-                        logging.error(f"Failed to refresh driver: {refresh_error}")
-                        profile_info = {}
-                        break
-            
-            batch_results.append({
-                "profile_link": link,
-                "profile_data": profile_info
-            })
-            time.sleep(random.uniform(1, 2))
-
+        # Collect results as they complete
+        for future in as_completed(future_to_chunk):
+            chunk_id = future_to_chunk[future]
+            try:
+                chunk_results = future.result()
+                all_results.extend(chunk_results)
+                logging.info(f"Chunk {chunk_id} completed successfully with {len(chunk_results)} results")
+            except Exception as e:
+                logging.error(f"Chunk {chunk_id} failed with error: {e}")
+    
+    # Sort results by original order (based on profile_link)
+    all_results.sort(key=lambda x: batch_links.index(x["profile_link"]))
+    
     # Save batch results as JSON artifact
     json_name = f"{csv_filename.replace('.csv','')}-{batch_number}-{run_uuid}.json"
     with open(json_name, 'w', encoding='utf-8') as f:
-        json.dump(batch_results, f, indent=2, ensure_ascii=False)
-    logging.info(f"Batch results saved to {json_name}")
+        json.dump(all_results, f, indent=2, ensure_ascii=False)
+    logging.info(f"Batch results saved to {json_name} with {len(all_results)} total results")
 
 if __name__ == "__main__":
     main() 
