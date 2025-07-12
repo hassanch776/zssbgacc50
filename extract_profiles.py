@@ -7,12 +7,14 @@ from seleniumbase import SB
 from bs4 import BeautifulSoup
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Configuration: Number of Chrome instances to run in parallel
 NUM_CHROME_INSTANCES = 3  # Safe for Windows runner (2-4 cores)
+MAX_RETRIES_PER_LINK = 3  # Maximum retries per link
+THREAD_TIMEOUT_SECONDS = 600  # 10 minutes timeout per thread
 
 def extract_profile_info(sb, url, batch_number, link_index):
     logging.info(f"Extracting profile info from URL: {url}")
@@ -115,46 +117,68 @@ def process_batch_chunk(chunk_links, chunk_id, batch_number, run_uuid, proxy_sel
     
     logging.info(f"Chrome instance {chunk_id} starting with {len(chunk_links)} links")
     
-    # Each instance gets its own SB context - no conflicts
-    with SB(uc=True, proxy=proxy_selenium, headless=True) as sb:
-        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-        
-        for i, link in enumerate(chunk_links, 1):
-            logging.info(f"Instance {chunk_id} processing link {i}/{len(chunk_links)}: {link}")
+    try:
+        # Each instance gets its own SB context - no conflicts
+        with SB(uc=True, proxy=proxy_selenium, headless=True) as sb:
+            sb.activate_cdp_mode("about:blank", tzone="America/Panama")
             
-            while True:
-                try:
-                    profile_info = extract_profile_info(sb, link, batch_number, f"{chunk_id}_{i}")
-                    if not profile_info:
-                        # Session might be blocked, get new driver
-                        logging.warning(f"Instance {chunk_id}: Profile extraction failed for {link}, refreshing driver...")
-                        sb.driver.quit()
-                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
-                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-                        continue
-                    else:
-                        logging.info(f"Instance {chunk_id}: Successfully extracted profile info for {link}")
-                        break
-                except Exception as e:
-                    logging.error(f"Instance {chunk_id}: Error processing {link}: {e}")
-                    # Try refreshing the driver
+            for i, link in enumerate(chunk_links, 1):
+                logging.info(f"Instance {chunk_id} processing link {i}/{len(chunk_links)}: {link}")
+                
+                # Add retry limit to prevent infinite loops
+                retry_count = 0
+                profile_info = {}
+                
+                while retry_count < MAX_RETRIES_PER_LINK:
                     try:
-                        sb.driver.quit()
-                        sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
-                        sb.activate_cdp_mode("about:blank", tzone="America/Panama")
-                    except Exception as refresh_error:
-                        logging.error(f"Instance {chunk_id}: Failed to refresh driver: {refresh_error}")
-                        profile_info = {}
-                        break
-            
-            chunk_results.append({
-                "profile_link": link,
-                "profile_data": profile_info
-            })
-            time.sleep(random.uniform(1, 2))
-    
-    logging.info(f"Chrome instance {chunk_id} completed processing {len(chunk_results)} links")
-    return chunk_results
+                        profile_info = extract_profile_info(sb, link, batch_number, f"{chunk_id}_{i}")
+                        if profile_info:
+                            logging.info(f"Instance {chunk_id}: Successfully extracted profile info for {link}")
+                            break
+                        else:
+                            # Session might be blocked, get new driver
+                            logging.warning(f"Instance {chunk_id}: Profile extraction failed for {link}, attempt {retry_count + 1}/{MAX_RETRIES_PER_LINK}")
+                            retry_count += 1
+                            if retry_count < MAX_RETRIES_PER_LINK:
+                                try:
+                                    sb.driver.quit()
+                                    sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
+                                    sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+                                    time.sleep(2)  # Brief pause before retry
+                                except Exception as refresh_error:
+                                    logging.error(f"Instance {chunk_id}: Failed to refresh driver: {refresh_error}")
+                                    break
+                    except Exception as e:
+                        logging.error(f"Instance {chunk_id}: Error processing {link}: {e}")
+                        retry_count += 1
+                        if retry_count < MAX_RETRIES_PER_LINK:
+                            # Try refreshing the driver
+                            try:
+                                sb.driver.quit()
+                                sb.get_new_driver(undetectable=True, proxy=proxy_selenium)
+                                sb.activate_cdp_mode("about:blank", tzone="America/Panama")
+                                time.sleep(2)  # Brief pause before retry
+                            except Exception as refresh_error:
+                                logging.error(f"Instance {chunk_id}: Failed to refresh driver: {refresh_error}")
+                                break
+                        else:
+                            logging.error(f"Instance {chunk_id}: Max retries reached for {link}")
+                            break
+                
+                # Always append result, even if empty
+                chunk_results.append({
+                    "profile_link": link,
+                    "profile_data": profile_info
+                })
+                time.sleep(random.uniform(1, 2))
+        
+        logging.info(f"Chrome instance {chunk_id} completed processing {len(chunk_results)} links")
+        return chunk_results
+        
+    except Exception as e:
+        logging.error(f"Chrome instance {chunk_id} failed with fatal error: {e}")
+        # Return partial results if any
+        return chunk_results
 
 def split_links_into_chunks(batch_links, num_chunks):
     """Split batch_links into roughly equal chunks"""
@@ -221,6 +245,8 @@ def main():
     logging.info(f"  - CSV filename: {csv_filename}")
     logging.info(f"  - Proxy: {proxy_dns}")
     logging.info(f"  - Chrome instances: {NUM_CHROME_INSTANCES}")
+    logging.info(f"  - Max retries per link: {MAX_RETRIES_PER_LINK}")
+    logging.info(f"  - Thread timeout: {THREAD_TIMEOUT_SECONDS} seconds")
     
     # Split batch_links into chunks for parallel processing
     link_chunks = split_links_into_chunks(batch_links, NUM_CHROME_INSTANCES)
@@ -229,7 +255,7 @@ def main():
     for i, chunk in enumerate(link_chunks):
         logging.info(f"  - Chunk {i+1}: {len(chunk)} links")
     
-    # Process chunks in parallel using ThreadPoolExecutor
+    # Process chunks in parallel using ThreadPoolExecutor with timeout
     all_results = []
     
     with ThreadPoolExecutor(max_workers=NUM_CHROME_INSTANCES) as executor:
@@ -239,18 +265,32 @@ def main():
             for i, chunk in enumerate(link_chunks)
         }
         
-        # Collect results as they complete
-        for future in as_completed(future_to_chunk):
+        # Collect results as they complete with timeout
+        completed_chunks = 0
+        total_chunks = len(future_to_chunk)
+        
+        for future in as_completed(future_to_chunk, timeout=THREAD_TIMEOUT_SECONDS):
             chunk_id = future_to_chunk[future]
             try:
-                chunk_results = future.result()
+                chunk_results = future.result(timeout=30)  # 30 second timeout for result retrieval
                 all_results.extend(chunk_results)
-                logging.info(f"Chunk {chunk_id} completed successfully with {len(chunk_results)} results")
+                completed_chunks += 1
+                logging.info(f"Chunk {chunk_id} completed successfully with {len(chunk_results)} results ({completed_chunks}/{total_chunks})")
+            except TimeoutError:
+                logging.error(f"Chunk {chunk_id} timed out")
+                completed_chunks += 1
             except Exception as e:
                 logging.error(f"Chunk {chunk_id} failed with error: {e}")
+                completed_chunks += 1
+        
+        logging.info(f"All chunks processed. Completed: {completed_chunks}/{total_chunks}")
     
     # Sort results by original order (based on profile_link)
-    all_results.sort(key=lambda x: batch_links.index(x["profile_link"]))
+    try:
+        all_results.sort(key=lambda x: batch_links.index(x["profile_link"]))
+        logging.info("Results sorted by original order")
+    except Exception as e:
+        logging.error(f"Failed to sort results: {e}")
     
     # Save batch results as JSON artifact
     json_name = f"{csv_filename.replace('.csv','')}-{batch_number}-{run_uuid}.json"
