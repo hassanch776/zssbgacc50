@@ -24,6 +24,9 @@ on:
       proxy_dns:
         description: 'Proxy DNS (host:port)'
         required: true
+      run_uuid:
+        description: 'Unique run identifier'
+        required: true
 
 jobs:
   scrape:
@@ -49,7 +52,7 @@ jobs:
         $batchLinks = @'
         ${{ github.event.inputs.batch_links }}
         '@
-        python extract_profiles.py --parent_url "${{ github.event.inputs.parent_url }}" --batch_number "${{ github.event.inputs.batch_number }}" --batch_links $batchLinks --csv_filename "${{ github.event.inputs.csv_filename }}" --proxy_username "${{ github.event.inputs.proxy_username }}" --proxy_password "${{ github.event.inputs.proxy_password }}" --proxy_dns "${{ github.event.inputs.proxy_dns }}"
+        python extract_profiles.py --parent_url "${{ github.event.inputs.parent_url }}" --batch_number "${{ github.event.inputs.batch_number }}" --batch_links $batchLinks --csv_filename "${{ github.event.inputs.csv_filename }}" --run_uuid "${{ github.event.inputs.run_uuid }}" --proxy_username "${{ github.event.inputs.proxy_username }}" --proxy_password "${{ github.event.inputs.proxy_password }}" --proxy_dns "${{ github.event.inputs.proxy_dns }}"
 
     - name: List generated files
       run: |
@@ -65,7 +68,7 @@ jobs:
       run: |
         $CSV_FILENAME = "${{ github.event.inputs.csv_filename }}"
         $JSON_BASENAME = $CSV_FILENAME -replace '\.csv$', ''
-        $JSON_FILENAME = "${JSON_BASENAME}-${{ github.event.inputs.batch_number }}.json"
+        $JSON_FILENAME = "${JSON_BASENAME}-${{ github.event.inputs.batch_number }}-${{ github.event.inputs.run_uuid }}.json"
         echo "json_filename=$JSON_FILENAME" >> $env:GITHUB_OUTPUT
         echo "Generated filename: $JSON_FILENAME"
         
@@ -81,7 +84,7 @@ jobs:
       uses: actions/upload-artifact@v4
       if: always()  # Upload debug files even if the job fails
       with:
-        name: debug-files-batch-${{ github.event.inputs.batch_number }}
+        name: debug-files-batch-${{ github.event.inputs.batch_number }}-${{ github.event.inputs.run_uuid }}
         path: |
           debug_*.png
           debug_*.html
@@ -93,7 +96,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: error-log-batch-${{ github.event.inputs.batch_number }}
+        name: error-log-batch-${{ github.event.inputs.batch_number }}-${{ github.event.inputs.run_uuid }}
         path: workflow.log
         retention-days: 30
         if-no-files-found: ignore 
