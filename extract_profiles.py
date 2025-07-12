@@ -110,6 +110,7 @@ def main():
     parser.add_argument('--batch_number', type=int, required=True)
     parser.add_argument('--batch_links', required=True)
     parser.add_argument('--csv_filename', required=True)
+    parser.add_argument('--run_uuid', required=True)
     parser.add_argument('--proxy_username', required=True)
     parser.add_argument('--proxy_password', required=True)
     parser.add_argument('--proxy_dns', required=True)
@@ -117,6 +118,7 @@ def main():
 
     parent_url = args.parent_url
     batch_number = args.batch_number
+    run_uuid = args.run_uuid
     
     # Try to parse JSON from command line argument, with better error handling
     try:
@@ -148,6 +150,7 @@ def main():
     logging.info(f"Starting batch processing:")
     logging.info(f"  - Parent URL: {parent_url}")
     logging.info(f"  - Batch number: {batch_number}")
+    logging.info(f"  - Run UUID: {run_uuid}")
     logging.info(f"  - Number of links: {len(batch_links)}")
     logging.info(f"  - CSV filename: {csv_filename}")
     logging.info(f"  - Proxy: {proxy_dns}")
@@ -191,7 +194,7 @@ def main():
             time.sleep(random.uniform(1, 2))
 
     # Save batch results as JSON artifact
-    json_name = f"{csv_filename.replace('.csv','')}-{batch_number}.json"
+    json_name = f"{csv_filename.replace('.csv','')}-{batch_number}-{run_uuid}.json"
     with open(json_name, 'w', encoding='utf-8') as f:
         json.dump(batch_results, f, indent=2, ensure_ascii=False)
     logging.info(f"Batch results saved to {json_name}")
