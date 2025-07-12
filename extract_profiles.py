@@ -13,7 +13,7 @@ import queue
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Configuration: Number of Chrome instances to run in parallel
-NUM_CHROME_INSTANCES = 2  # Reduced to 2 for better stability
+NUM_CHROME_INSTANCES = 3  # Reduced to 2 for better stability
 MAX_RETRIES_PER_LINK = 3  # Maximum retries per link
 THREAD_TIMEOUT_SECONDS = 600  # 10 minutes timeout per thread
 OPERATION_TIMEOUT_SECONDS = 60  # 1 minute timeout per operation
